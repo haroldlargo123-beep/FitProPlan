@@ -2263,5 +2263,154 @@ body.normal-user .ex-body > .ex-media{display:none!important}
 })();
 </script>
 
+<!-- PATCH FINAL FIX19: guardado único, reintento si está lento y peso de progresión -->
+<style>
+.fix19-weight-box{margin:10px 0 8px;padding:10px;border:1px solid var(--border);border-radius:var(--radius-sm);background:#fff}.fix19-weight-label{display:block;font-size:10px;color:var(--text2);text-transform:uppercase;font-weight:700;margin-bottom:6px}.fix19-weight-row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}.fix19-weight-row input{flex:1;min-width:140px;padding:8px 10px;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--bg);outline:none}.fix19-weight-row input:focus{border-color:var(--primary)}.fix19-weight-unit{padding:8px 10px;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--bg);color:var(--text2)}.fix19-weight-hint{font-size:11px;color:var(--text3);margin-top:6px;line-height:1.4}.fix19-toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);z-index:999999;background:#111;color:#fff;padding:9px 14px;border-radius:999px;font-size:12px;font-weight:700;box-shadow:0 6px 22px rgba(0,0,0,.22);opacity:.96;pointer-events:none;animation:fix19ToastIn .18s ease-out}@keyframes fix19ToastIn{from{opacity:0;transform:translate(-50%,8px)}to{opacity:.96;transform:translate(-50%,0)}}.fix19-btn-saved{background:var(--success)!important;color:#fff!important;border-color:var(--success)!important}.fix19-btn-retry{background:var(--accent)!important;color:#fff!important;border-color:var(--accent)!important}
+</style>
+<script>
+(function(){
+  const VER='FIX19-save-retry-weight-progression';
+  let lastToastAt=0;
+  let saveSeq=0;
+  function q(id){return document.getElementById(id)}
+  function data(){try{return typeof getStorage==='function'?getStorage():{}}catch(e){return {}}}
+  function setData(d){try{if(typeof setStorage==='function')setStorage(d)}catch(e){}}
+  function toast(text='Guardado'){
+    const now=Date.now();
+    if(now-lastToastAt<650) return;
+    lastToastAt=now;
+    try{
+      document.querySelectorAll('.fix19-toast,.fix18-toast,.fix17-toast,.fix15-toast,.fix14-toast').forEach(x=>x.remove());
+      const d=document.createElement('div');
+      d.className='fix19-toast';
+      d.textContent=text;
+      document.body.appendChild(d);
+      setTimeout(()=>d.remove(),1600);
+    }catch(e){}
+  }
+  window.showSavedToastFix19=toast;
+  function btnForNote(id){
+    const active=document.activeElement;
+    if(active && active.tagName==='BUTTON') return active;
+    return q('exbody-'+id)?.querySelector('.note-save-row button') || null;
+  }
+  function setBtn(btn,text,cls){
+    if(!btn)return;
+    btn.disabled = text==='Guardando...' || text==='Reintentando...';
+    btn.classList.remove('fix19-btn-saved','fix19-btn-retry');
+    if(cls)btn.classList.add(cls);
+    btn.textContent=text;
+  }
+  function markSaved(btn,old,seq){
+    if(seq!==saveSeq)return;
+    if(!btn)return;
+    btn.disabled=false;
+    btn.classList.remove('fix19-btn-retry');
+    btn.classList.add('fix19-btn-saved');
+    btn.textContent='Guardado';
+    setTimeout(()=>{
+      if(seq!==saveSeq)return;
+      btn.classList.remove('fix19-btn-saved');
+      btn.textContent=old||'Guardar nota';
+      btn.disabled=false;
+    },1400);
+  }
+  function exerciseIdFromBody(body){return (body?.id||'').replace('exbody-','')}
+  function addWeightFields(){
+    const d=data();
+    document.querySelectorAll('.ex-body').forEach(body=>{
+      const id=exerciseIdFromBody(body);
+      if(!id || body.querySelector('.fix19-weight-box') || body.querySelector('.fix18-weight-box'))return;
+      const notesLabel=body.querySelector('.ex-notes-lbl');
+      if(!notesLabel)return;
+      const value=d['weight_'+id]||'';
+      const unit=d['weight_unit_'+id]||'kg';
+      const box=document.createElement('div');
+      box.className='fix19-weight-box';
+      box.innerHTML=`<label class="fix19-weight-label">🏋️ Peso trabajado</label><div class="fix19-weight-row"><input id="weight-${id}" type="number" inputmode="decimal" step="0.1" min="0" placeholder="Ej: 12.5" value="${String(value).replace(/"/g,'&quot;')}"><select id="weight-unit-${id}" class="fix19-weight-unit"><option value="kg" ${unit==='kg'?'selected':''}>kg</option><option value="lb" ${unit==='lb'?'selected':''}>lb</option><option value="banda" ${unit==='banda'?'selected':''}>banda</option><option value="corporal" ${unit==='corporal'?'selected':''}>peso corporal</option></select></div><div class="fix19-weight-hint">Se guarda con la nota para tomar datos de progresión.</div>`;
+      notesLabel.parentNode.insertBefore(box,notesLabel);
+    });
+  }
+  function saveWeight(id,d){
+    const w=q('weight-'+id), u=q('weight-unit-'+id);
+    if(w)d['weight_'+id]=w.value;
+    if(u)d['weight_unit_'+id]=u.value;
+    if(w&&w.value){
+      const key='weight_history_'+id;
+      let h=Array.isArray(d[key])?d[key]:[];
+      const last=h[h.length-1];
+      const entry={value:w.value,unit:u?u.value:'kg',date:new Date().toISOString()};
+      const lastTime=last?.date?new Date(last.date).getTime():0;
+      if(!last||last.value!==entry.value||last.unit!==entry.unit||Date.now()-lastTime>120000){h.push(entry);d[key]=h.slice(-30)}
+    }
+  }
+  async function cloudSaveWithRetry(pending,btn,seq){
+    if(typeof saveCloudData!=='function')return 'local';
+    let timedOut=false;
+    const slowTimer=setTimeout(()=>{timedOut=true;if(seq===saveSeq)setBtn(btn,'Reintentando...','fix19-btn-retry')},2500);
+    try{
+      await Promise.race([Promise.resolve(saveCloudData()),new Promise((_,rej)=>setTimeout(()=>rej(new Error('slow-save')),3500))]);
+      clearTimeout(slowTimer);
+      return timedOut?'retry-ok':'ok';
+    }catch(e){
+      clearTimeout(slowTimer);
+      // Si está lento o falló: recarga la base, remezcla lo pendiente y reintenta una vez.
+      try{
+        if(seq===saveSeq)setBtn(btn,'Reintentando...','fix19-btn-retry');
+        if(typeof loadCloudData==='function'){
+          await Promise.race([Promise.resolve(loadCloudData()),new Promise(resolve=>setTimeout(resolve,2500))]);
+        }
+        const merged=Object.assign({}, data(), pending);
+        setData(merged);
+        await Promise.race([Promise.resolve(saveCloudData()),new Promise((_,rej)=>setTimeout(()=>rej(new Error('retry-slow')),4500))]);
+        return 'retried';
+      }catch(err){
+        console.warn(VER,'retry failed, keeping local',err);
+        return 'local';
+      }
+    }
+  }
+  window.saveNotes=async function(id){
+    const seq=++saveSeq;
+    const btn=btnForNote(id);
+    const old=btn?.dataset.fix19OriginalText||btn?.textContent||'Guardar nota';
+    if(btn)btn.dataset.fix19OriginalText=old;
+    setBtn(btn,'Guardando...');
+    try{
+      const d=data();
+      const note=q('notes-'+id);
+      if(note)d['notes_'+id]=note.value;
+      saveWeight(id,d);
+      const pending={};
+      pending['notes_'+id]=d['notes_'+id]||'';
+      pending['weight_'+id]=d['weight_'+id]||'';
+      pending['weight_unit_'+id]=d['weight_unit_'+id]||'kg';
+      pending['weight_history_'+id]=d['weight_history_'+id]||[];
+      setData(d);
+      const status=await cloudSaveWithRetry(pending,btn,seq);
+      if(seq!==saveSeq)return;
+      markSaved(btn,old,seq);
+      toast(status==='local'?'Guardado local':'Guardado');
+      try{if(typeof setSyncStatus==='function')setSyncStatus(status==='local'?'Guardado localmente':'Guardado en la nube',status==='local'?'warn':'ok')}catch(e){}
+    }catch(e){
+      console.warn(VER,'save notes',e);
+      if(seq===saveSeq){markSaved(btn,old,seq);toast('Guardado local')}
+    }
+  };
+  try{saveNotes=window.saveNotes}catch(e){}
+  const oldRender=window.renderPlan;
+  if(typeof oldRender==='function'){
+    window.renderPlan=function(){const r=oldRender.apply(this,arguments);setTimeout(addWeightFields,80);return r};
+    try{renderPlan=window.renderPlan}catch(e){}
+  }
+  const oldToggle=window.toggleEx;
+  if(typeof oldToggle==='function'){
+    window.toggleEx=function(id){const r=oldToggle.apply(this,arguments);setTimeout(addWeightFields,60);return r};
+    try{toggleEx=window.toggleEx}catch(e){}
+  }
+  window.addEventListener('load',()=>setTimeout(addWeightFields,800));
+})();
+</script>
+
 </body>
 </html>
